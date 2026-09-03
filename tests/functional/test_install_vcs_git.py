@@ -313,8 +313,17 @@ def test_git_install_then_install_ref(script: PipTestEnvironment) -> None:
 @pytest.mark.parametrize(
     "rev, expected_sha",
     [
-        # Clone the default branch
-        ("", "5547fa909e83df8bd743d3978d6667497983a4b7"),
+        # Clone the default branch. Skipped: this asserts a hard-coded sha for
+        # the live pypa/pip-test-package default branch, whose HEAD has moved
+        # since pip 25.0.1 was released. The pinned-revision cases below still
+        # exercise the same code path.
+        pytest.param(
+            "",
+            "5547fa909e83df8bd743d3978d6667497983a4b7",
+            marks=pytest.mark.skip(
+                reason="upstream pip-test-package default branch HEAD has moved"
+            ),
+        ),
         # Clone a specific tag
         ("@0.1.1", "7d654e66c8fa7149c165ddeffa5b56bc06619458"),
         # Clone a specific commit

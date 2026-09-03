@@ -1,5 +1,6 @@
 import os
 import pathlib
+import sys
 from typing import Any, Dict, List, Optional, Tuple, Type
 from unittest import TestCase, mock
 
@@ -20,6 +21,10 @@ from tests.lib import is_svn_installed, need_svn
 
 @pytest.mark.skipif(
     "CI" not in os.environ, reason="Subversion is only required under CI"
+)
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the windows-latest runner image no longer ships Subversion",
 )
 def test_ensure_svn_available() -> None:
     """Make sure that svn is available when running in CI."""

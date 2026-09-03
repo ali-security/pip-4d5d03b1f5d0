@@ -324,9 +324,16 @@ def isolate(tmpdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NO_COLOR", False)
 
     # FIXME: Windows...
+    # Also disable git's background auto-maintenance/auto-gc: it transiently
+    # creates .git/objects/maintenance.lock, which races this harness's
+    # filesystem snapshots (tests/lib diff_states) and raises FileNotFoundError.
     os.makedirs(os.path.join(home_dir, ".config", "git"))
     with open(os.path.join(home_dir, ".config", "git", "config"), "wb") as fp:
-        fp.write(b"[user]\n\tname = pip\n\temail = distutils-sig@python.org\n")
+        fp.write(
+            b"[user]\n\tname = pip\n\temail = distutils-sig@python.org\n"
+            b"[maintenance]\n\tauto = false\n"
+            b"[gc]\n\tauto = 0\n"
+        )
 
 
 @pytest.fixture(autouse=True)

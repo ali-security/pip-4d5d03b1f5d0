@@ -1,17 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-    tags:
-      # Tags for all potential release numbers till 2030.
-      - "2[0-9].[0-3]" # 20.0 -> 29.3
-      - "2[0-9].[0-3].[0-9]+" # 20.0.0 -> 29.3.[0-9]+
-  pull_request:
-  schedule:
-    - cron: 0 0 * * MON # Run every Monday at 00:00 UTC
   workflow_dispatch:
     # allow manual runs on branches without a PR
+    inputs:
+      test-filter:
+        description: "Optional pytest -k expression; empty runs the full suite"
+        required: false
+        default: ""
 
 env:
   # The "FORCE_COLOR" variable, when set to 1,
@@ -26,17 +22,31 @@ jobs:
   docs:
     name: docs
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+      # Resolve the outer pip installs (nox, the test requirements and the
+      # tests/data/common_wheels setuptools/wheel fixtures) against the package
+      # index as it existed on pip 25.0.1's release date, so the suite runs
+      # against the same tooling upstream CI used instead of today's. This goes
+      # in pip's *user config file* rather than PIP_INDEX_URL, because the env
+      # var is inherited by the pip-under-test that pip's own functional tests
+      # spawn, while tests/conftest.py redirects HOME/XDG_CONFIG_HOME per test
+      # so the config file is not.
+      - name: Pin the toolchain index to the release date
+        run: |
+          mkdir -p "$HOME/.config/pip"
+          printf '[global]\nindex-url = https://:2025-02-09@time-machines-pypi.sealsecurity.io/\n' > "$HOME/.config/pip/pip.conf"
       - run: pip install nox
       - run: nox -s docs
 
   determine-changes:
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     outputs:
       tests: ${{ steps.filter.outputs.tests }}
       vendoring: ${{ steps.filter.outputs.vendoring }}
@@ -65,6 +75,7 @@ jobs:
   packaging:
     name: packaging
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +87,19 @@ jobs:
           git config --global user.email "pypa-dev@googlegroups.com"
           git config --global user.name "pip"
 
+      # Resolve the outer pip installs (nox, the test requirements and the
+      # tests/data/common_wheels setuptools/wheel fixtures) against the package
+      # index as it existed on pip 25.0.1's release date, so the suite runs
+      # against the same tooling upstream CI used instead of today's. This goes
+      # in pip's *user config file* rather than PIP_INDEX_URL, because the env
+      # var is inherited by the pip-under-test that pip's own functional tests
+      # spawn, while tests/conftest.py redirects HOME/XDG_CONFIG_HOME per test
+      # so the config file is not.
+      - name: Pin the toolchain index to the release date
+        run: |
+          mkdir -p "$HOME/.config/pip"
+          printf '[global]\nindex-url = https://:2025-02-09@time-machines-pypi.sealsecurity.io/\n' > "$HOME/.config/pip/pip.conf"
+
       - run: pip install nox
       - run: nox -s prepare-release -- 99.9
       - run: nox -s build-release -- 99.9
@@ -84,6 +108,7 @@ jobs:
   vendoring:
     name: vendoring
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     needs: [determine-changes]
     if: >-
@@ -94,7 +119,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          # "3.x" was CPython 3.13 on pip 25.0.1's release date; the release-era
+          # rpds-py/PyO3 0.23.3 the vendoring session resolves cannot build against 3.14.
+          python-version: "3.13"
+
+      # Resolve the outer pip installs (nox, the test requirements and the
+      # tests/data/common_wheels setuptools/wheel fixtures) against the package
+      # index as it existed on pip 25.0.1's release date, so the suite runs
+      # against the same tooling upstream CI used instead of today's. This goes
+      # in pip's *user config file* rather than PIP_INDEX_URL, because the env
+      # var is inherited by the pip-under-test that pip's own functional tests
+      # spawn, while tests/conftest.py redirects HOME/XDG_CONFIG_HOME per test
+      # so the config file is not.
+      - name: Pin the toolchain index to the release date
+        run: |
+          mkdir -p "$HOME/.config/pip"
+          printf '[global]\nindex-url = https://:2025-02-09@time-machines-pypi.sealsecurity.io/\n' > "$HOME/.config/pip/pip.conf"
 
       - run: pip install nox
       - run: nox -s vendoring
@@ -103,6 +143,7 @@ jobs:
   tests-unix:
     name: tests / ${{ matrix.python.key || matrix.python }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
 
     needs: [packaging, determine-changes]
     if: >-
@@ -110,9 +151,13 @@ jobs:
       github.event_name != 'pull_request'
 
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-13, macos-latest]
+        # Upstream paired an x64 macOS (macos-13) with an arm64 one, but the
+        # macos-13 label is retired and both surviving macOS labels are arm64,
+        # so two entries ran the identical suite twice. macOS coverage stays
+        # via macos-latest.
+        os: [ubuntu-22.04, macos-latest]
         python:
           - "3.8"
           - "3.9"
@@ -120,6 +165,19 @@ jobs:
           - "3.11"
           - "3.12"
           - "3.13"
+        # macOS tests are expensively slow and a fork's macOS runner pool is
+        # small, so the legs queue in waves instead of running concurrently.
+        # Only test the oldest and newest Python supported by pip on macOS,
+        # mirroring what upstream already does for its Windows matrix above.
+        exclude:
+          - os: macos-latest
+            python: "3.9"
+          - os: macos-latest
+            python: "3.10"
+          - os: macos-latest
+            python: "3.11"
+          - os: macos-latest
+            python: "3.12"
 
     steps:
       - uses: actions/checkout@v4
@@ -143,6 +201,19 @@ jobs:
           fi
           brew install ${DEPS}
 
+      # Resolve the outer pip installs (nox, the test requirements and the
+      # tests/data/common_wheels setuptools/wheel fixtures) against the package
+      # index as it existed on pip 25.0.1's release date, so the suite runs
+      # against the same tooling upstream CI used instead of today's. This goes
+      # in pip's *user config file* rather than PIP_INDEX_URL, because the env
+      # var is inherited by the pip-under-test that pip's own functional tests
+      # spawn, while tests/conftest.py redirects HOME/XDG_CONFIG_HOME per test
+      # so the config file is not.
+      - name: Pin the toolchain index to the release date
+        run: |
+          mkdir -p "$HOME/.config/pip"
+          printf '[global]\nindex-url = https://:2025-02-09@time-machines-pypi.sealsecurity.io/\n' > "$HOME/.config/pip/pip.conf"
+
       - run: pip install nox
 
       # Main check
@@ -151,16 +222,19 @@ jobs:
           nox -s test-${{ matrix.python.key || matrix.python }} --
           tests/unit
           --verbose --numprocesses auto --showlocals
+          ${{ inputs.test-filter && format('-k "{0}"', inputs.test-filter) || '' }}
       - name: Run integration tests
         run: >-
           nox -s test-${{ matrix.python.key || matrix.python }} --no-install --
           tests/functional
           --verbose --numprocesses auto --showlocals
           --durations=5
+          ${{ inputs.test-filter && format('-k "{0}"', inputs.test-filter) || '' }}
 
   tests-windows:
     name: tests / ${{ matrix.python }} / ${{ matrix.os }} / ${{ matrix.group.number }}
     runs-on: ${{ matrix.os }}-latest
+    timeout-minutes: 50
 
     needs: [packaging, determine-changes]
     if: >-
@@ -168,7 +242,7 @@ jobs:
       github.event_name != 'pull_request'
 
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: [Windows]
         python:
@@ -198,6 +272,22 @@ jobs:
           python-version: ${{ matrix.python }}
           allow-prereleases: true
 
+      # Resolve the outer pip installs (nox, the test requirements and the
+      # tests/data/common_wheels setuptools/wheel fixtures) against the package
+      # index as it existed on pip 25.0.1's release date, so the suite runs
+      # against the same tooling upstream CI used instead of today's. This goes
+      # in pip's *user config file* rather than PIP_INDEX_URL, because the env
+      # var is inherited by the pip-under-test that pip's own functional tests
+      # spawn, while tests/conftest.py redirects HOME/XDG_CONFIG_HOME per test
+      # so the config file is not.
+      - name: Pin the toolchain index to the release date
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:APPDATA\pip" | Out-Null
+          Set-Content -Path "$env:APPDATA\pip\pip.ini" -Value @(
+            "[global]",
+            "index-url = https://:2025-02-09@time-machines-pypi.sealsecurity.io/"
+          )
+
       - run: pip install nox
 
       # Main check
@@ -207,11 +297,12 @@ jobs:
           nox -s test-${{ matrix.python }} --
           tests/unit
           --verbose --numprocesses auto --showlocals
+          ${{ inputs.test-filter && format('-k "{0}"', inputs.test-filter) || '' }}
 
       - name: Run integration tests (group ${{ matrix.group.number }})
         run: >-
           nox -s test-${{ matrix.python }} --no-install --
-          tests/functional -k "${{ matrix.group.pytest-filter }}"
+          tests/functional -k "(${{ matrix.group.pytest-filter }})${{ inputs.test-filter && format(' and ({0})', inputs.test-filter) || '' }}"
           --verbose --numprocesses auto --showlocals
 
   tests-zipapp:
@@ -220,6 +311,7 @@ jobs:
     # beating out the ubuntu-latest runners. The zipapp tests are slow by
     # nature, and we don't care where they run, so we pick the fastest one.
     runs-on: macos-latest
+    timeout-minutes: 50
 
     needs: [packaging, determine-changes]
     if: >-
@@ -235,6 +327,19 @@ jobs:
       - name: Install MacOS dependencies
         run: brew install breezy subversion
 
+      # Resolve the outer pip installs (nox, the test requirements and the
+      # tests/data/common_wheels setuptools/wheel fixtures) against the package
+      # index as it existed on pip 25.0.1's release date, so the suite runs
+      # against the same tooling upstream CI used instead of today's. This goes
+      # in pip's *user config file* rather than PIP_INDEX_URL, because the env
+      # var is inherited by the pip-under-test that pip's own functional tests
+      # spawn, while tests/conftest.py redirects HOME/XDG_CONFIG_HOME per test
+      # so the config file is not.
+      - name: Pin the toolchain index to the release date
+        run: |
+          mkdir -p "$HOME/.config/pip"
+          printf '[global]\nindex-url = https://:2025-02-09@time-machines-pypi.sealsecurity.io/\n' > "$HOME/.config/pip/pip.conf"
+
       - run: pip install nox
 
       # Main check
@@ -245,6 +350,7 @@ jobs:
           --verbose --numprocesses auto --showlocals
           --durations=5
           --use-zipapp
+          ${{ inputs.test-filter && format('-k "{0}"', inputs.test-filter) || '' }}
 
   check:  # This job does nothing and is only used for the branch protection
     if: always()
@@ -259,6 +365,7 @@ jobs:
       - vendoring
 
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     steps:
       - name: Decide whether the needed jobs succeeded or failed
